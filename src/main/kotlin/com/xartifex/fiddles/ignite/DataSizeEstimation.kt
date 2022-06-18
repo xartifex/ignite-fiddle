@@ -1,9 +1,15 @@
 package com.xartifex.fiddles.ignite
 
-import org.apache.ignite.IgniteCache
 import org.apache.ignite.Ignition
-import org.apache.ignite.cluster.ClusterState
+import org.apache.ignite.configuration.IgniteConfiguration
+import org.apache.ignite.spi.metric.LongMetric
+import org.apache.ignite.spi.metric.Metric
+import org.apache.ignite.spi.metric.jmx.JmxMetricExporterSpi
 import java.sql.Timestamp
+import java.text.CharacterIterator
+import java.text.StringCharacterIterator
+import java.util.stream.Collectors.toSet
+import java.util.stream.StreamSupport
 
 
 object DataSizeEstimation {
@@ -14,20 +20,69 @@ object DataSizeEstimation {
         return Value(i, "123456789$i", Timestamp(System.currentTimeMillis()))
     }
 
+    private val charPool: List<Char> = ('a'..'z') + ('A'..'Z') + ('0'..'9')
+    private fun getRandomString(): String {
+        return (1..100)
+            .map { i -> kotlin.random.Random.nextInt(0, charPool.size) }
+            .map(charPool::get)
+            .joinToString("")
+    }
+
+    private fun humanReadableByteCountBin(bytes: Long): String {
+        val absB = if (bytes == Long.MIN_VALUE) Long.MAX_VALUE else Math.abs(bytes)
+        if (absB < 1024) {
+            return "$bytes B"
+        }
+        var value = absB
+        val ci: CharacterIterator = StringCharacterIterator("KMGTPE")
+        var i = 40
+        while (i >= 0 && absB > 0xfffccccccccccccL shr i) {
+            value = value shr 10
+            ci.next()
+            i -= 10
+        }
+        value *= java.lang.Long.signum(bytes).toLong()
+        return String.format("%.1f %ciB", value / 1024.0, ci.current())
+    }
+
 
     @JvmStatic
     fun main(args: Array<String>) {
-        Ignition.start(config).use { ignite ->
-            ignite.cluster().state(ClusterState.ACTIVE)
-            println("Populating the cache...")
-            val cache: IgniteCache<Long, Value> = ignite.cache("myCache")
-            for (i in 0..2000000) {
-                cache.put(i.toLong(), createSampleValue(i))
-            }
-            println("Total storage size: " + ignite.dataStorageMetrics().totalAllocatedSize)
-            ignite.cluster().state(ClusterState.INACTIVE)
-        }
-    }
+        println("--------------" + getRandomString())
 
-    internal class Value(var id: Int, var name: String, var date: Timestamp)
+
+        val jmxSpi = JmxMetricExporterSpi()
+
+        val ignite = Ignition.start(
+            IgniteConfiguration()
+                .setIgniteInstanceName("jmxExampleInstanceName")
+                .setMetricExporterSpi(jmxSpi)
+        )
+
+        print("Populating cache...")
+        ignite.createCache<Long, String>("myCache")
+        ignite.dataStreamer<Long, String>("myCache").use { streamer ->
+            for (i in 0..10_000_000) {
+                streamer.addData(i.toLong(), getRandomString())
+            }
+        }
+        println("done")
+
+        val ioReg = jmxSpi.spiContext.getOrCreateMetricRegistry("io.dataregion.default")
+
+        val listOfMetrics: Set<*> = StreamSupport.stream(ioReg.spliterator(), false)
+            .map { obj: Metric -> obj.name() }
+            .collect(toSet())
+
+        println("The list of available data region metrics: $listOfMetrics")
+        println("The 'default' data region MaxSize: " + ioReg.findMetric<LongMetric>("MaxSize")?.value())
+        println(
+            "TotalAllocatedSize: " + humanReadableByteCountBin(
+                ioReg.findMetric<LongMetric>("TotalAllocatedSize")!!.value()
+            )
+        )
+        ignite.cluster().stopNodes()
+    }
 }
+
+internal class Value(var id: Int, var name: String, var date: Timestamp)
