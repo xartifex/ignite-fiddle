@@ -20,9 +20,12 @@ object DataSizeEstimation {
         return Value(i, "123456789$i", Timestamp(System.currentTimeMillis()))
     }
 
+    const val ENTRIES_NUM = 100
+    const val MSG_LENGTH = 1_000_000
+
     private val charPool: List<Char> = ('a'..'z') + ('A'..'Z') + ('0'..'9')
     private fun getRandomString(): String {
-        return (1..100)
+        return (1..MSG_LENGTH)
             .map { i -> kotlin.random.Random.nextInt(0, charPool.size) }
             .map(charPool::get)
             .joinToString("")
@@ -62,7 +65,7 @@ object DataSizeEstimation {
         print("Populating cache...")
         ignite.createCache<Long, String>("myCache")
         ignite.dataStreamer<Long, String>("myCache").use { streamer ->
-            for (i in 0..10_000_000) {
+            for (i in 1..ENTRIES_NUM) {
                 streamer.addData(i.toLong(), getRandomString())
             }
         }
@@ -76,11 +79,13 @@ object DataSizeEstimation {
 
         println("The list of available data region metrics: $listOfMetrics")
         println("The 'default' data region MaxSize: " + ioReg.findMetric<LongMetric>("MaxSize")?.value())
+        println("---------------------------------------")
         println(
-            "TotalAllocatedSize: " + humanReadableByteCountBin(
+            "TotalAllocatedSize for map size of $ENTRIES_NUM entries, $MSG_LENGTH bytes each: " + humanReadableByteCountBin(
                 ioReg.findMetric<LongMetric>("TotalAllocatedSize")!!.value()
             )
         )
+        println("---------------------------------------")
         ignite.cluster().stopNodes()
     }
 }
